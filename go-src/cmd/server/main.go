@@ -14,12 +14,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,11 +29,15 @@ import (
 
 	"wb2hub/internal/auth"
 	"wb2hub/internal/config"
+	"wb2hub/internal/growth"
 	"wb2hub/internal/limits"
+	"wb2hub/internal/logring"
 	"wb2hub/internal/multikey"
 	"wb2hub/internal/pool"
 	"wb2hub/internal/proxy"
+	"wb2hub/internal/scheduler"
 	"wb2hub/internal/server"
+	"wb2hub/internal/trial"
 	"wb2hub/internal/upstream"
 )
 
@@ -53,7 +59,13 @@ func main() {
 		log.Fatalf("[fatal] load config: %v", err)
 	}
 
-	app, err := build(cfg)
+	// The ring is created before anything else logs, and the standard logger is
+	// tee'd into it. Without the tee, a panic traceback or a startup failure
+	// would be visible only on stderr, which the Android host app discards.
+	logRing := logring.New(cfg.LogCapacity)
+	log.SetOutput(io.MultiWriter(os.Stderr, logRing))
+
+	app, err := build(cfg, logRing)
 	if err != nil {
 		log.Fatalf("[fatal] %v", err)
 	}
@@ -96,13 +108,15 @@ func main() {
 
 // App holds the wired components so main stays readable.
 type App struct {
-	Handler *server.Handler
-	Pool    *pool.Pool
-	Keys    *multikey.Store
-	Slots   *proxy.Store
-	Limits  *limits.Tracker
+	Handler   *server.Handler
+	Pool      *pool.Pool
+	Keys      *multikey.Store
+	Slots     *proxy.Store
+	Limits    *limits.Tracker
+	Scheduler *scheduler.Scheduler
 
 	stopFlush chan struct{}
+	cancel    context.CancelFunc
 }
 
 // PoolCount is a small convenience for the startup banner.
@@ -110,6 +124,12 @@ func (a *App) PoolCount() int { return len(a.Pool.List()) }
 
 // Close stops background work.
 func (a *App) Close() {
+	if a.Scheduler != nil {
+		a.Scheduler.Stop()
+	}
+	if a.cancel != nil {
+		a.cancel()
+	}
 	if a.stopFlush != nil {
 		close(a.stopFlush)
 	}
@@ -117,7 +137,7 @@ func (a *App) Close() {
 }
 
 // build assembles every component from the resolved configuration.
-func build(cfg *Config) (*App, error) {
+func build(cfg *Config, logRing *logring.Ring) (*App, error) {
 	if err := os.MkdirAll(cfg.AuthDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create auth dir: %w", err)
 	}
@@ -160,6 +180,21 @@ func build(cfg *Config) (*App, error) {
 	up := upstream.New()
 	up.HTTP.Timeout = time.Duration(cfg.UpstreamTimeoutSeconds) * time.Second
 
+	// The scheduler shares the pool and the upstream client with the request
+	// path on purpose: a run must see the same account state a request would,
+	// and a check-in that renews a token has to update the account the request
+	// path is about to use.
+	sched := scheduler.New(scheduler.Config{
+		Pool:           p,
+		Growth:         growth.New(up),
+		Trial:          trial.New(up),
+		CheckinHours:   cfg.Scheduler.CheckinHours,
+		TravelHours:    cfg.Scheduler.TravelHours,
+		KeepaliveHours: cfg.Scheduler.KeepaliveHours,
+		CatHours:       cfg.Scheduler.CatHours,
+		Log:            log.Printf,
+	})
+
 	handler := server.NewHandler(server.Config{
 		Pool:          p,
 		Upstream:      up,
@@ -171,17 +206,29 @@ func build(cfg *Config) (*App, error) {
 		DefaultModel:  cfg.DefaultModel,
 		RequireKey:    cfg.RequireKey,
 		LocalWebTools: cfg.LocalWebTools,
+		Logs:          logRing,
+		Scheduler:     sched,
 	})
 
 	app := &App{
-		Handler: handler,
-		Pool:    p,
-		Keys:    keys,
-		Slots:   slots,
-		Limits:  tracker,
+		Handler:   handler,
+		Pool:      p,
+		Keys:      keys,
+		Slots:     slots,
+		Limits:    tracker,
+		Scheduler: sched,
 	}
 	app.stopFlush = make(chan struct{})
 	p.StartFlusher(app.stopFlush, 30*time.Second)
+
+	if cfg.Scheduler.Enabled {
+		runCtx, cancel := context.WithCancel(context.Background())
+		app.cancel = cancel
+		go sched.Run(runCtx)
+		log.Printf("[scheduler] 定时巡检已启用: %s", sched.Status().Mode)
+	} else {
+		log.Printf("[scheduler] 定时巡检已关闭 (TW2H_SCHEDULER=0)")
+	}
 	return app, nil
 }
 
@@ -204,6 +251,17 @@ type Config struct {
 	LocalWebTools          bool
 	UpstreamTimeoutSeconds int
 	FreeModels             []string
+
+	// LogCapacity is how many log lines the panel can scroll back through.
+	LogCapacity int
+
+	Scheduler struct {
+		Enabled        bool  `json:"enabled"`
+		CheckinHours   []int `json:"checkin_hours"`
+		TravelHours    []int `json:"travel_hours"`
+		KeepaliveHours []int `json:"keepalive_hours"`
+		CatHours       []int `json:"cat_hours"`
+	} `json:"scheduler"`
 
 	Limits struct {
 		DailyCreditLimit     int64 `json:"daily_credit_limit"`
@@ -256,7 +314,11 @@ func defaults() *Config {
 		DefaultModel:           "auto",
 		UpstreamTimeoutSeconds: 120,
 		LegacyAPIKey:           "wb2hub-local-key",
+		LogCapacity:            500,
 	}
+	// Scheduled welfare runs are opt-in: they touch every account on a timer, so
+	// an operator should have to say yes to that rather than discover it.
+	cfg.Scheduler.Enabled = false
 	// Only the CN realm has check-in, but the free-model list is about quota
 	// accounting, not check-in, so it stays realm-agnostic.
 	cfg.FreeModels = []string{}
@@ -287,9 +349,17 @@ func mergeFile(dst *Config, src *Config) {
 	if len(src.FreeModels) > 0 {
 		dst.FreeModels = src.FreeModels
 	}
+	if src.LogCapacity > 0 {
+		dst.LogCapacity = src.LogCapacity
+	}
 	dst.Limits = src.Limits
 	dst.LocalWebTools = src.LocalWebTools
 	dst.RequireKey = src.RequireKey
+
+	// The scheduler block is taken whole when the file mentions it, because a
+	// partial overlay would make "set only the check-in hours" silently reset
+	// the others to their defaults.
+	dst.Scheduler = src.Scheduler
 }
 
 func applyEnv(cfg *Config) {
@@ -304,6 +374,23 @@ func applyEnv(cfg *Config) {
 
 	setBool(&cfg.RequireKey, "TW2H_REQUIRE_KEY")
 	setBool(&cfg.LocalWebTools, "TW2H_LOCAL_WEB_TOOLS")
+	setBool(&cfg.Scheduler.Enabled, "TW2H_SCHEDULER")
+
+	if v := os.Getenv("TW2H_LOG_CAPACITY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.LogCapacity = n
+		}
+	}
+
+	// Hour lists are comma-separated: TW2H_CHECKIN_HOURS=9,21
+	cfg.Scheduler.CheckinHours = parseHours(os.Getenv("TW2H_CHECKIN_HOURS"),
+		cfg.Scheduler.CheckinHours)
+	cfg.Scheduler.TravelHours = parseHours(os.Getenv("TW2H_TRAVEL_HOURS"),
+		cfg.Scheduler.TravelHours)
+	cfg.Scheduler.KeepaliveHours = parseHours(os.Getenv("TW2H_KEEPALIVE_HOURS"),
+		cfg.Scheduler.KeepaliveHours)
+	cfg.Scheduler.CatHours = parseHours(os.Getenv("TW2H_CAT_HOURS"),
+		cfg.Scheduler.CatHours)
 
 	if v := os.Getenv("TW2H_UPSTREAM_TIMEOUT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -324,6 +411,32 @@ func applyEnv(cfg *Config) {
 		}
 		cfg.FreeModels = out
 	}
+}
+
+// parseHours reads a comma-separated hour list, keeping the previous value when
+// the variable is unset or contains nothing usable.
+//
+// Out-of-range entries are dropped rather than rejected: an hour of 25 would
+// never match a wall clock, so accepting it would disable a job while the panel
+// still showed it as configured.
+func parseHours(raw string, fallback []int) []int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	out := make([]int, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || n < 0 || n > 23 {
+			continue
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return fallback
+	}
+	sort.Ints(out)
+	return out
 }
 
 func setStr(dst *string, key string) {
@@ -359,6 +472,12 @@ func setInt64(dst *int64, key string) {
 func normalise(cfg *Config) {
 	if cfg.UpstreamTimeoutSeconds <= 0 {
 		cfg.UpstreamTimeoutSeconds = 120
+	}
+	if cfg.LogCapacity <= 0 {
+		cfg.LogCapacity = 500
+	}
+	if cfg.LogCapacity > 20000 {
+		cfg.LogCapacity = 20000
 	}
 	for _, n := range []*int64{
 		&cfg.Limits.DailyCreditLimit,

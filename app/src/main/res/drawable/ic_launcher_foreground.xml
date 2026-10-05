@@ -1,18 +1,76 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher foreground: a cat face drawn with vector paths only.
+
+  Sized inside the 108x108 adaptive-icon viewport with the artwork kept within
+  the central 72x72 safe zone, because the launcher masks the outer ring and
+  different devices crop it differently (circle, squircle, rounded square).
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 外圈六边形 -->
+
+    <!-- Ears: two triangles behind the head, drawn first so the head overlaps
+         their base and they read as attached rather than floating. -->
     <path
-        android:pathData="M54,24 L80,39 L80,69 L54,84 L28,69 L28,39 Z"
-        android:strokeColor="#5b8cff"
-        android:strokeWidth="5.5"
-        android:fillColor="#00000000"
-        android:strokeLineJoin="round" />
-    <!-- 中心实心圆 -->
+        android:fillColor="#FF7C5CFF"
+        android:pathData="M34,40 L30,22 L48,32 Z" />
     <path
-        android:pathData="M54,54 m-13,0 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0"
-        android:fillColor="#5b8cff" />
+        android:fillColor="#FF7C5CFF"
+        android:pathData="M74,40 L78,22 L60,32 Z" />
+
+    <!-- Inner ear, a smaller offset triangle in a brighter tint. -->
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M36,38 L34,27 L45,33 Z" />
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M72,38 L74,27 L63,33 Z" />
+
+    <!-- Head: a rounded blob. Using a single path with arcs rather than a
+         circle because the head is wider than it is tall. -->
+    <path
+        android:fillColor="#FF7C5CFF"
+        android:pathData="M54,34
+            C66,34 76,43 76,54
+            C76,66 66,76 54,76
+            C42,76 32,66 32,54
+            C32,43 42,34 54,34 Z" />
+
+    <!-- Eyes: filled ellipses with a highlight dot, so the face reads at
+         small sizes where a pure outline would disappear. -->
+    <path
+        android:fillColor="#FF141824"
+        android:pathData="M44,50 m-4.5,0 a4.5,5.5 0 1,0 9,0 a4.5,5.5 0 1,0 -9,0" />
+    <path
+        android:fillColor="#FF141824"
+        android:pathData="M64,50 m-4.5,0 a4.5,5.5 0 1,0 9,0 a4.5,5.5 0 1,0 -9,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M43,48 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M63,48 m-1.4,0 a1.4,1.4 0 1,0 2.8,0 a1.4,1.4 0 1,0 -2.8,0" />
+
+    <!-- Nose: a small downward triangle. -->
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M54,57 L57.5,60 L50.5,60 Z" />
+
+    <!-- Whiskers: three per side, tapering outward. Stroke-free paths keep the
+         adaptive icon's stroke rendering identical across launchers. -->
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M30,56 L44,58 L44,59.6 L30,58.4 Z" />
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M30,62 L44,62 L44,63.6 L30,64.4 Z" />
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M78,56 L64,58 L64,59.6 L78,58.4 Z" />
+    <path
+        android:fillColor="#FFB39BFF"
+        android:pathData="M78,62 L64,62 L64,63.6 L78,64.4 Z" />
 </vector>

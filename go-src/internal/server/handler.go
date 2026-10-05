@@ -18,11 +18,14 @@ import (
 	"time"
 
 	"wb2hub/internal/auth"
+	"wb2hub/internal/codearts"
 	"wb2hub/internal/config"
 	"wb2hub/internal/limits"
+	"wb2hub/internal/logring"
 	"wb2hub/internal/multikey"
 	"wb2hub/internal/pool"
 	"wb2hub/internal/proxy"
+	"wb2hub/internal/scheduler"
 	"wb2hub/internal/upstream"
 	"wb2hub/internal/webtools"
 )
@@ -44,22 +47,54 @@ type Config struct {
 
 	// LocalWebTools enables the gateway-run web_search / web_fetch executor.
 	LocalWebTools bool
+
+	// Logs is the shared log ring. The gateway attaches the standard logger to
+	// it as well, so a panic or a startup line lands in the same view the panel
+	// reads.
+	Logs *logring.Ring
+
+	// Scheduler is the daily welfare scheduler. Nil disables the panel's
+	// schedule view and its manual triggers.
+	Scheduler *scheduler.Scheduler
 }
 
 // Handler is the root HTTP handler.
 type Handler struct {
 	cfg Config
 
-	// logRing keeps the most recent lines for the panel's log view without
-	// growing without bound.
-	logMu   sync.Mutex
-	logRing []string
-	logMax  int
+	// logs keeps the most recent lines for the panel without growing without
+	// bound. The panel polls with a sequence cursor, so the ring has to hand out
+	// stable sequence numbers rather than just the last N strings.
+	logs *logring.Ring
 
 	startedAt time.Time
 
 	chatMu  sync.Mutex
 	chatSeq int64
+
+	// codearts login state. Only one interactive login runs at a time: the flow
+	// waits on a browser redirect to a fixed loopback port, so a second attempt
+	// would fight the first for that port. Holding the state here lets a
+	// concurrent caller observe the running attempt instead of failing
+	// obscurely.
+	codeartsMu        sync.Mutex
+	codeartsAuthURL   string
+	codeartsStage     string
+	codeartsError     string
+	codeartsPKCE      codearts.PkcePair
+	codeartsState     string
+	codeartsStartedAt time.Time
+
+	// codeartsCallbackPort is where the browser redirect lands.
+	codeartsCallbackPort int
+}
+
+// callbackPort returns the configured OAuth callback port, defaulting to 18081.
+func (h *Handler) callbackPort() int {
+	if h.codeartsCallbackPort > 0 {
+		return h.codeartsCallbackPort
+	}
+	return 18081
 }
 
 // NewHandler builds a handler.
@@ -70,7 +105,10 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.Upstream == nil {
 		cfg.Upstream = upstream.New()
 	}
-	return &Handler{cfg: cfg, logMax: 500, startedAt: time.Now()}
+	if cfg.Logs == nil {
+		cfg.Logs = logring.New(500)
+	}
+	return &Handler{cfg: cfg, logs: cfg.Logs, startedAt: time.Now()}
 }
 
 // now is indirected so tests can pin the clock.
@@ -106,6 +144,27 @@ func (h *Handler) Routes() *http.ServeMux {
 
 	// ---- Web tools (ported feature) ------------------------------------
 	mux.HandleFunc("/admin/webtools", h.withKey(h.handleWebTools))
+
+	// ---- CodeArts upstream (Huawei) ------------------------------------
+	mux.HandleFunc("/admin/codearts/login/start", h.withKey(h.handleCodeartsLoginStart))
+	mux.HandleFunc("/admin/codearts/login/status", h.withKey(h.handleCodeartsLoginStatus))
+	mux.HandleFunc("/admin/codearts/import", h.withKey(h.handleCodeartsImport))
+	mux.HandleFunc("/admin/codearts/status", h.withKey(h.handleCodeartsStatus))
+	mux.HandleFunc("/admin/codearts/models", h.withKey(h.handleCodeartsModels))
+	mux.HandleFunc("/admin/codearts/checkin", h.withKey(h.handleCodeartsCheckin))
+
+	// ---- Growth centre (China realm only) ------------------------------
+	mux.HandleFunc("/admin/growth", h.withKey(h.handleGrowthView))
+	mux.HandleFunc("/admin/growth/", h.withKey(h.handleGrowthAction))
+
+	// ---- Trial / quota -------------------------------------------------
+	mux.HandleFunc("/admin/trial", h.withKey(h.handleTrialView))
+	mux.HandleFunc("/admin/trial/", h.withKey(h.handleTrialAction))
+
+	// ---- Scheduled welfare runs ----------------------------------------
+	mux.HandleFunc("/admin/scheduler", h.withKey(h.handleSchedulerStatus))
+	mux.HandleFunc("/admin/scheduler/run", h.withKey(h.handleSchedulerRun))
+	mux.HandleFunc("/admin/scheduler/config", h.withKey(h.handleSchedulerConfig))
 
 	// ---- Logs / diagnostics --------------------------------------------
 	mux.HandleFunc("/admin/logs", h.withKey(h.handleLogs))
@@ -204,26 +263,40 @@ func decodeBody(r *http.Request, into any) error {
 	return nil
 }
 
-// logLine appends to the in-memory ring the panel reads.
+// logLine appends to the ring the panel reads.
 func (h *Handler) logLine(format string, args ...any) {
-	line := time.Now().Format("15:04:05") + " " + fmt.Sprintf(format, args...)
-	h.logMu.Lock()
-	defer h.logMu.Unlock()
-	h.logRing = append(h.logRing, line)
-	if len(h.logRing) > h.logMax {
-		h.logRing = h.logRing[len(h.logRing)-h.logMax:]
+	if h.logs == nil {
+		return
 	}
+	h.logs.Write([]byte(fmt.Sprintf(format, args...) + "\n"))
 }
 
 // Logs returns the ring contents, oldest first.
 //
-// A nil slice is returned as an empty one so the JSON is [] rather than null.
+// The timestamp is re-attached because the ring stores it separately for the
+// panel's structured view; this flat form is what a caller pasting logs into a
+// bug report wants.
 func (h *Handler) Logs() []string {
-	h.logMu.Lock()
-	defer h.logMu.Unlock()
-	out := make([]string, 0, len(h.logRing))
-	return append(out, h.logRing...)
+	if h.logs == nil {
+		return []string{}
+	}
+	out := make([]string, 0, h.logs.Len())
+	for _, line := range h.logs.Snapshot() {
+		out = append(out, line.At+" "+line.Text)
+	}
+	return out
 }
+
+// LogsSince returns lines newer than seq, for the panel's incremental poll.
+func (h *Handler) LogsSince(seq uint64) []logring.Line {
+	if h.logs == nil {
+		return []logring.Line{}
+	}
+	return h.logs.SnapshotSince(seq)
+}
+
+// LogRing exposes the ring so the gateway can attach the standard logger to it.
+func (h *Handler) LogRing() *logring.Ring { return h.logs }
 
 // nextMidnight returns the next local midnight, when daily quotas reset.
 func nextMidnight(t time.Time) time.Time {

@@ -41,6 +41,17 @@ type Account struct {
 	// possible without a global switch.
 	ProxySlot string `json:"proxy_slot"`
 
+	// Metadata the desktop client stores alongside the tokens. Kept because the
+	// panel shows the nickname and the enterprise.
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Nickname     string `json:"nickname,omitempty"`
+	DeviceToken  string `json:"device_token,omitempty"`
+
+	// Codearts holds the Huawei CodeArts credential when this account has one.
+	// It is stored as raw JSON so the auth package does not have to import the
+	// codearts package, which would invert the dependency direction.
+	Codearts json.RawMessage `json:"codearts,omitempty"`
+
 	// Credential blobs kept verbatim so a refresh can present whatever upstream
 	// asked for last time.
 	Raw map[string]any `json:"raw,omitempty"`
@@ -194,6 +205,36 @@ func (a *Account) SetProxy(slot string) {
 	a.ProxySlot = strings.TrimSpace(slot)
 }
 
+// CodeartsRaw returns the stored CodeArts credential blob, or nil.
+//
+// The auth package hands this out verbatim rather than decoding it: the shape
+// belongs to the codearts package, and duplicating it here would let the two
+// drift.
+func (a *Account) CodeartsRaw() json.RawMessage {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.Codearts) == 0 {
+		return nil
+	}
+	out := make(json.RawMessage, len(a.Codearts))
+	copy(out, a.Codearts)
+	return out
+}
+
+// HasCodearts reports whether this account carries a CodeArts credential.
+func (a *Account) HasCodearts() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return len(a.Codearts) > 0 && string(a.Codearts) != "null"
+}
+
+// SetCodearts installs a CodeArts credential blob.
+func (a *Account) SetCodearts(raw json.RawMessage) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Codearts = raw
+}
+
 // Enabled reports whether the account may serve traffic.
 func (a *Account) IsEnabled() bool {
 	a.mu.RLock()
@@ -214,14 +255,17 @@ func (a *Account) SetEnabled(on bool) {
 // It is a distinct type rather than an Account so copying it can never drag the
 // account's mutex along.
 type View struct {
-	UID        string         `json:"uid"`
-	Realm      string         `json:"realm"`
-	ProxySlot  string         `json:"proxy_slot"`
-	Enabled    bool           `json:"enabled"`
-	ExpiresAt  int64          `json:"expires_at"`
-	HasToken   bool           `json:"has_token"`
-	HasRefresh bool           `json:"has_refresh"`
-	Raw        map[string]any `json:"raw,omitempty"`
+	UID          string         `json:"uid"`
+	Realm        string         `json:"realm"`
+	ProxySlot    string         `json:"proxy_slot"`
+	Enabled      bool           `json:"enabled"`
+	ExpiresAt    int64          `json:"expires_at"`
+	HasToken     bool           `json:"has_token"`
+	HasRefresh   bool           `json:"has_refresh"`
+	Nickname     string         `json:"nickname,omitempty"`
+	EnterpriseID string         `json:"enterprise_id,omitempty"`
+	HasCodearts  bool           `json:"has_codearts"`
+	Raw          map[string]any `json:"raw,omitempty"`
 }
 
 // Snapshot returns a copy safe to marshal without holding the lock.
@@ -229,13 +273,16 @@ func (a *Account) Snapshot() View {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	out := View{
-		UID:        a.UID,
-		Realm:      a.Realm,
-		ProxySlot:  a.ProxySlot,
-		Enabled:    a.Enabled,
-		ExpiresAt:  a.ExpiresAt,
-		HasToken:   a.AccessToken != "",
-		HasRefresh: a.RefreshToken != "",
+		UID:          a.UID,
+		Realm:        a.Realm,
+		ProxySlot:    a.ProxySlot,
+		Enabled:      a.Enabled,
+		ExpiresAt:    a.ExpiresAt,
+		HasToken:     a.AccessToken != "",
+		HasRefresh:   a.RefreshToken != "",
+		Nickname:     a.Nickname,
+		EnterpriseID: a.EnterpriseID,
+		HasCodearts:  len(a.Codearts) > 0 && string(a.Codearts) != "null",
 	}
 	if a.Raw != nil {
 		out.Raw = make(map[string]any, len(a.Raw))
@@ -261,6 +308,12 @@ func (a *Account) Save() error {
 		"expires_at":    a.ExpiresAt,
 		"proxy_slot":    a.ProxySlot,
 		"enabled":       a.Enabled,
+		"nickname":      a.Nickname,
+		"enterprise_id": a.EnterpriseID,
+		"device_token":  a.DeviceToken,
+	}
+	if len(a.Codearts) > 0 {
+		payload["codearts"] = a.Codearts
 	}
 	if a.Raw != nil {
 		payload["raw"] = a.Raw

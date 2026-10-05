@@ -1,4 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- 界面文案统一中文；代码里的标识符保持 ASCII。 -->
     <string name="app_name">WB2Hub</string>
+
+    <string name="subtitle">CodeBuddy / WorkBuddy / CodeArts 三上游本地网关</string>
+
+    <string name="status_running">运行中</string>
+    <string name="status_stopped">已停止</string>
+
+    <string name="btn_copy_endpoint">复制接口地址与密钥</string>
+    <string name="btn_refresh">刷新状态</string>
+    <string name="btn_restart">重启网关</string>
+    <string name="btn_add_account">添加账号（粘贴凭证）</string>
+    <string name="btn_add_codearts">添加 CodeArts 凭证</string>
+    <string name="btn_manage_proxy">管理出口代理</string>
+    <string name="btn_scheduler">定时巡检</string>
+    <string name="btn_growth">成长中心</string>
+    <string name="btn_trial">试用与额度</string>
+    <string name="section_scheduler">定时巡检</string>
+    <string name="section_growth">成长中心</string>
+    <string name="section_trial">试用与额度</string>
+    <string name="scheduler_disabled">定时巡检未启用。用 TW2H_SCHEDULER=1 打开后重启网关。</string>
+    <string name="btn_manage_keys">管理 API 密钥</string>
+
+    <string name="label_endpoint">接口地址</string>
+    <string name="label_apikey">API 密钥</string>
+    <string name="label_health">健康检查</string>
+
+    <string name="section_accounts">账号</string>
+    <string name="section_limits">每日限额</string>
+    <string name="section_proxy">出口代理</string>
+    <string name="section_keys">API 密钥</string>
+
+    <string name="empty_accounts">暂无账号，点下方按钮添加</string>
+    <string name="empty_slots">暂无出口代理</string>
+    <string name="empty_keys">暂无独立密钥（使用默认密钥）</string>
+
+    <string name="hint_import_token">粘贴账号的 access_token，或整段凭证 JSON</string>
+    <string name="hint_import_refresh">refresh_token（可选）</string>
+    <string name="hint_import_uid">uid（可选，留空则从令牌中解析）</string>
+
+    <string name="hint_codearts_ak">access_key_id</string>
+    <string name="hint_codearts_sk">secret_access_key</string>
+    <string name="hint_codearts_st">security_token（可选，留空则首次使用时自动换取）</string>
+    <string name="hint_codearts_ticket">ticket_id（可选，走浏览器登录时填）</string>
+
+    <string name="toast_gateway_not_running">网关未运行，请先点「重启网关」</string>
+    <string name="toast_imported">账号已导入</string>
+    <string name="toast_import_failed">导入失败，请检查凭证</string>
+    <string name="toast_codearts_saved">CodeArts 凭证已保存</string>
+    <string name="toast_need_token">access_token 不能为空</string>
+    <string name="toast_restarting">正在重启…</string>
+    <string name="toast_copied">已复制到剪贴板</string>
+
+    <string name="dialog_cancel">取消</string>
+    <string name="dialog_import">导入</string>
+    <string name="dialog_save">保存</string>
+
+    <string name="proxy_bound">已绑定 %1$d 个账号</string>
+    <string name="proxy_unprobed">未探测</string>
 </resources>
