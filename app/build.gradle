@@ -1,0 +1,82 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.wb2hub.lite'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.wb2hub.lite"
+        // Adaptive icon only (pure vector, no PNG assets), hence minSdk 26.
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        // The embedded gateway is cross-compiled with GOARCH=arm64, so only that
+        // ABI ships. Declaring it here stops the packager from looking for others.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    // Fixed signing key, committed alongside the project so every build shares
+    // one certificate and later versions install straight over earlier ones.
+    // The store password is not a secret here: this is a self-built personal
+    // app, and the alternative — a keystore that lives only on one machine —
+    // makes an upgrade impossible after a machine change.
+    signingConfigs {
+        fixed {
+            storeFile file("../keystore/wb2hub.p12")
+            storeType "PKCS12"
+            storePassword "wb2hub123"
+            keyAlias "wb2hub"
+            keyPassword "wb2hub123"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+        debug {
+            minifyEnabled false
+            signingConfig signingConfigs.fixed
+        }
+    }
+
+    /*
+     * The embedded gateway ships as libwb2hub.so inside jniLibs/arm64-v8a/.
+     *
+     * Android 10+ applies W^X to app-private storage, so a plain file cannot be
+     * executed. Only nativeLibraryDir (/data/app/<pkg>/lib/arm64/) is executable.
+     *
+     * Android 6+ normally packages a .so compressed and page-aligned, mapping it
+     * at install time and leaving no standalone file on disk — so it cannot be
+     * executed either. Hence:
+     *   useLegacyPackaging = true   (compress at package time, extract on install)
+     *   extractNativeLibs="true"    (manifest side, see AndroidManifest.xml)
+     */
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // No third-party dependencies on purpose. appcompat and webkit each pull a
+    // different kotlin-stdlib and the release build then fails the duplicate
+    // class check. Everything here uses platform APIs only.
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#FF10131A</color>
+    <color name="surface">#FF1A1F2A</color>
+    <color name="accent">#FF4C8DFF</color>
+    <color name="ok">#FF2FBF71</color>
+    <color name="warn">#FFE8A33D</color>
+    <color name="err">#FFE5484D</color>
+    <color name="text">#FFE8ECF3</color>
+    <color name="muted">#FF8A93A5</color>
+    <color name="ic_launcher_background">#FF10131A</color>
+</resources>
